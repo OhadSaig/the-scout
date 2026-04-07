@@ -88,6 +88,115 @@ with st.sidebar:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Shared agent runner (used by both Deep Clean and Career Tracker pages)
+# ══════════════════════════════════════════════════════════════════════════════
+def run_agent_ui(mode: str):
+    from agents.scout import ScoutAgent
+
+    crm = get_crm()
+    agent = ScoutAgent(dry_run=dry_run)
+    agent.crm = crm  # use the shared CRM so dashboard reflects changes
+
+    # Re-wire tool layer onto the shared CRM instance
+    from tools.crm_tools import CRMTools
+    agent._crm_tools = CRMTools(crm)
+
+    col_log, col_alerts = st.columns([3, 2])
+
+    with col_log:
+        st.subheader("Agent Activity")
+        log_container = st.empty()
+
+    with col_alerts:
+        st.subheader("🚨 Job Change Alerts")
+        alert_container = st.empty()
+
+    log_lines: list[str] = []
+    alerts: list[dict] = []
+
+    def render_log():
+        log_container.markdown("\n\n".join(log_lines[-60:]), unsafe_allow_html=True)
+
+    def render_alerts():
+        if not alerts:
+            alert_container.info("No job changes detected yet.")
+            return
+        html = ""
+        for a in alerts:
+            html += (
+                f'<div class="alert-card">'
+                f'<strong>🚨 {a["contact"]}</strong><br>'
+                f'<span style="color:#aaa">{a["old_title"]} @ {a["old_company"]}</span><br>'
+                f'<span style="color:#fff">➜ {a["new_title"]} @ {a["new_company"]}</span>'
+                f'</div>'
+            )
+        alert_container.markdown(html, unsafe_allow_html=True)
+
+    render_alerts()
+
+    # Set up the right iterator
+    if mode == "deep_clean":
+        if dry_run:
+            from dry_run import MockAnthropicClient, DEEP_CLEAN_TURNS
+            agent.client = MockAnthropicClient(DEEP_CLEAN_TURNS)
+        from agents.scout import DEEP_CLEAN_SYSTEM
+        iterator = agent._run_agent_iter(DEEP_CLEAN_SYSTEM, "Begin the Utopian Deep Clean.")
+    else:
+        if dry_run:
+            from dry_run import MockAnthropicClient, MONITOR_TURNS
+            agent.client = MockAnthropicClient(MONITOR_TURNS)
+        from agents.scout import MONITOR_SYSTEM
+        iterator = agent._run_agent_iter(MONITOR_SYSTEM, "Run the Career Tracker.")
+
+    for event in iterator:
+        t = event["type"]
+
+        if t == "status":
+            log_lines.append(f'<span style="color:#888">⏳ {event["text"]}</span>')
+
+        elif t == "thinking":
+            snippet = event["text"][:200].replace("\n", " ")
+            log_lines.append(f'<div class="thinking">💭 {snippet}{"…" if len(event["text"])>200 else ""}</div>')
+
+        elif t == "text":
+            # Convert markdown bold to HTML
+            text = event["text"].replace("**", "<strong>", 1)
+            while "**" in text:
+                text = text.replace("**", "</strong>", 1).replace("**", "<strong>", 1)
+            log_lines.append(
+                f'<div style="background:#162032;border-left:3px solid #4F8BF9;'
+                f'border-radius:4px;padding:8px 12px;margin:6px 0">{text}</div>'
+            )
+
+        elif t == "tool_call":
+            args_str = "  ".join(f'{k}=<em>{str(v)[:40]}</em>' for k, v in event["input"].items())
+            log_lines.append(
+                f'<div class="tool-call">🔧 <strong>{event["name"]}</strong>  {args_str}</div>'
+            )
+
+        elif t == "tool_result":
+            colour = "#FFB800" if event["result"].get("job_change_detected") else "#00CC88"
+            log_lines.append(
+                f'<span style="color:{colour};margin-left:16px;font-size:0.85rem">'
+                f'✓ {event["summary"]}</span>'
+            )
+
+        elif t == "alert":
+            alerts.append(event)
+            render_alerts()
+
+        render_log()
+        time.sleep(0.05)   # slight pacing so the UI updates feel real
+
+    log_lines.append('<br><strong style="color:#00CC88">✅ Done.</strong>')
+    render_log()
+
+    # Force dashboard to re-render with updated CRM data
+    st.session_state.crm = crm
+    st.success("Agent finished — switch to **📊 Dashboard** to see the updated CRM.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Dashboard
 # ══════════════════════════════════════════════════════════════════════════════
 if page == "📊 Dashboard":
@@ -170,120 +279,6 @@ if page == "📊 Dashboard":
         if "crm" in st.session_state:
             del st.session_state.crm
         st.rerun()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Shared agent runner (used by both Deep Clean and Career Tracker pages)
-# ══════════════════════════════════════════════════════════════════════════════
-def run_agent_ui(mode: str):
-    from agents.scout import ScoutAgent
-
-    crm = get_crm()
-    agent = ScoutAgent(dry_run=dry_run)
-    agent.crm = crm  # use the shared CRM so dashboard reflects changes
-
-    # Re-wire tool layer onto the shared CRM instance
-    from tools.crm_tools import CRMTools
-    agent._crm_tools = CRMTools(crm)
-
-    col_log, col_alerts = st.columns([3, 2])
-
-    with col_log:
-        st.subheader("Agent Activity")
-        log_container = st.empty()
-
-    with col_alerts:
-        st.subheader("🚨 Job Change Alerts")
-        alert_container = st.empty()
-
-    log_lines: list[str] = []
-    alerts: list[dict] = []
-
-    def render_log():
-        log_container.markdown("\n\n".join(log_lines[-60:]), unsafe_allow_html=True)
-
-    def render_alerts():
-        if not alerts:
-            alert_container.info("No job changes detected yet.")
-            return
-        html = ""
-        for a in alerts:
-            html += (
-                f'<div class="alert-card">'
-                f'<strong>🚨 {a["contact"]}</strong><br>'
-                f'<span style="color:#aaa">{a["old_title"]} @ {a["old_company"]}</span><br>'
-                f'<span style="color:#fff">➜ {a["new_title"]} @ {a["new_company"]}</span>'
-                f'</div>'
-            )
-        alert_container.markdown(html, unsafe_allow_html=True)
-
-    render_alerts()
-
-    # Set up the right iterator
-    if mode == "deep_clean":
-        if dry_run:
-            from dry_run import MockAnthropicClient, DEEP_CLEAN_TURNS
-            agent.client = MockAnthropicClient(DEEP_CLEAN_TURNS)
-        iterator = agent._run_agent_iter(
-            agent.__class__.__module__,   # unused — system prompt set below
-            "Begin the Utopian Deep Clean.",
-        )
-        # Re-use the proper system prompts from the agent module
-        from agents.scout import DEEP_CLEAN_SYSTEM
-        iterator = agent._run_agent_iter(DEEP_CLEAN_SYSTEM, "Begin the Utopian Deep Clean.")
-    else:
-        if dry_run:
-            from dry_run import MockAnthropicClient, MONITOR_TURNS
-            agent.client = MockAnthropicClient(MONITOR_TURNS)
-        from agents.scout import MONITOR_SYSTEM
-        iterator = agent._run_agent_iter(MONITOR_SYSTEM, "Run the Career Tracker.")
-
-    for event in iterator:
-        t = event["type"]
-
-        if t == "status":
-            log_lines.append(f'<span style="color:#888">⏳ {event["text"]}</span>')
-
-        elif t == "thinking":
-            snippet = event["text"][:200].replace("\n", " ")
-            log_lines.append(f'<div class="thinking">💭 {snippet}{"…" if len(event["text"])>200 else ""}</div>')
-
-        elif t == "text":
-            # Convert markdown bold to HTML
-            text = event["text"].replace("**", "<strong>", 1)
-            while "**" in text:
-                text = text.replace("**", "</strong>", 1).replace("**", "<strong>", 1)
-            log_lines.append(
-                f'<div style="background:#162032;border-left:3px solid #4F8BF9;'
-                f'border-radius:4px;padding:8px 12px;margin:6px 0">{text}</div>'
-            )
-
-        elif t == "tool_call":
-            args_str = "  ".join(f'{k}=<em>{str(v)[:40]}</em>' for k, v in event["input"].items())
-            log_lines.append(
-                f'<div class="tool-call">🔧 <strong>{event["name"]}</strong>  {args_str}</div>'
-            )
-
-        elif t == "tool_result":
-            colour = "#FFB800" if event["result"].get("job_change_detected") else "#00CC88"
-            log_lines.append(
-                f'<span style="color:{colour};margin-left:16px;font-size:0.85rem">'
-                f'✓ {event["summary"]}</span>'
-            )
-
-        elif t == "alert":
-            alerts.append(event)
-            render_alerts()
-
-        render_log()
-        time.sleep(0.05)   # slight pacing so the UI updates feel real
-
-    log_lines.append('<br><strong style="color:#00CC88">✅ Done.</strong>')
-    render_log()
-
-    # Force dashboard to re-render with updated CRM data
-    st.session_state.crm = crm
-    st.success("Agent finished — switch to **📊 Dashboard** to see the updated CRM.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
