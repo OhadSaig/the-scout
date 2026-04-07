@@ -272,8 +272,8 @@ if page == "📊 Dashboard":
             return "background-color: #3A1010; color: #FF4B4B"
         return ""
 
-    styled = df.style.applymap(_colour_score, subset=["Health Score"])
-    st.dataframe(styled, use_container_width=True, height=420)
+    styled = df.style.map(_colour_score, subset=["Health Score"])
+    st.dataframe(styled, width="stretch", height=420)
 
     if st.button("🔄 Reset CRM to original data"):
         if "crm" in st.session_state:
